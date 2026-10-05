@@ -1,0 +1,7 @@
+# 自分の測定データを置く場合は、公開したくなければ下の行を有効にする (tlc.csv は現在ダミーデータ)
+# tlc.csv
+# 派生ファイル・学習済みモデルは含めない
+molecular_features.csv
+tlc_snyder_model.json
+__pycache__/
+*.pyc
