@@ -48,9 +48,9 @@ def loco(df, feats, model, target='Rf'):
 
 MODELS = {
     'RF(train3相当)': lambda: make_pipeline(StandardScaler(), RandomForestRegressor(
-        n_estimators=500, bootstrap=False, random_state=0)),
+        n_estimators=500, bootstrap=False, random_state=0, n_jobs=-1)),
     'RF(浅め)': lambda: make_pipeline(StandardScaler(), RandomForestRegressor(
-        n_estimators=500, min_samples_leaf=3, max_features=0.5, random_state=0)),
+        n_estimators=500, min_samples_leaf=3, max_features=0.5, random_state=0, n_jobs=-1)),
     'Ridge': lambda: make_pipeline(StandardScaler(), RidgeCV(alphas=np.logspace(-2, 3, 30))),
     'PLS(2)': lambda: make_pipeline(StandardScaler(), PLSRegression(n_components=2)),
 }

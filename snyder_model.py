@@ -6,35 +6,36 @@
  α: 吸着剤の活性度(シリカ ~0.57。ここでは感度分析)。ε° はシリカ用に 0.8 倍。
 使い方: python snyder_model.py [追加特徴量csv ...]
 """
-import sys, itertools
+import os, sys
 import numpy as np
 import pandas as pd
-from cv_baseline import load
-from hier_model import add_solvent_vars, loco
 
-REF = pd.read_csv('solvent_ref.csv', index_col=0)
+REF = pd.read_csv(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'solvent_ref.csv'), index_col=0)
+_EPS0, _VOL = REF['eps0_Al2O3'], REF['MolarVolume']
 
 
 def snyder_eps(df, alpha, scale=0.8):
     """溶媒の強弱は ε° の大小で自動判定 (弱=A, 強=B)。df は Solvent_1/2, Ratio_1/2 (体積比) を持つ"""
-    e1 = df.Solvent_1.map(REF['eps0_Al2O3']).values; e2 = df.Solvent_2.map(REF['eps0_Al2O3']).values
+    e1 = df.Solvent_1.map(_EPS0).values; e2 = df.Solvent_2.map(_EPS0).values
     if np.isnan(e1).any() or np.isnan(e2).any():
         bad = sorted(set(df.Solvent_1[np.isnan(e1)]) | set(df.Solvent_2[np.isnan(e2)]))
         raise KeyError(f'solvent_ref.csv にない溶媒: {bad}')
     s1_strong = e1 >= e2
     weak = np.where(s1_strong, df.Solvent_2, df.Solvent_1); strong = np.where(s1_strong, df.Solvent_1, df.Solvent_2)
     vol_w = np.where(s1_strong, df.Ratio_2, df.Ratio_1); vol_s = np.where(s1_strong, df.Ratio_1, df.Ratio_2)
-    Vw = REF.loc[weak, 'MolarVolume'].values; Vs = REF.loc[strong, 'MolarVolume'].values
+    Vw = pd.Series(weak).map(_VOL).values; Vs = pd.Series(strong).map(_VOL).values
     nw, ns = vol_w / Vw, vol_s / Vs
     NB = ns / (ns + nw)
-    eA = REF.loc[weak, 'eps0_Al2O3'].values * scale
-    eB = REF.loc[strong, 'eps0_Al2O3'].values * scale
+    eA = pd.Series(weak).map(_EPS0).values * scale
+    eB = pd.Series(strong).map(_EPS0).values * scale
     nb = 6.0 * (Vs / 89.4) ** (2 / 3)
     k = alpha * nb
     return eA + np.log10(NB * 10 ** (k * (eB - eA)) + (1 - NB)) / k, NB
 
 
 if __name__ == '__main__':
+    from cv_baseline import load          # sklearn を読み込むので、解析として実行するときだけ import する
+    from hier_model import add_solvent_vars, loco
     df = add_solvent_vars(load(sys.argv[1:]))
     S = 'sys_meoh'
     print(f'n={len(df)} ベースライン(平均) MAE={np.abs(df.Rf - df.Rf.mean()).mean():.3f}   [参照 系+log(fpol)]'

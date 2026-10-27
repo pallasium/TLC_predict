@@ -24,12 +24,15 @@ import numpy as np
 import pandas as pd
 from snyder_model import snyder_eps
 
-MODEL = 'tlc_snyder_model.json'
+HERE = os.path.dirname(os.path.abspath(__file__))      # どのディレクトリから実行しても同じファイルを読む
+MODEL = os.path.join(HERE, 'tlc_snyder_model.json')
+REF_CSV = os.path.join(HERE, 'solvent_ref.csv')
+TLC_CSV = os.path.join(HERE, 'tlc.csv')
 ALPHA = 0.57
 LAM_KNOWN, LAM_UNKNOWN = 0.1, 100.0
 ALCOHOLS = ('MeOH', 'EtOH', 'iPrOH', 'nPrOH')
 TRAINED_PAIRS = ({'Hexane', 'AcOEt'}, {'CHCl3', 'MeOH'})   # 学習データにある溶媒系
-EPS0 = pd.read_csv('solvent_ref.csv', index_col=0)['eps0_Al2O3']
+EPS0 = pd.read_csv(REF_CSV, index_col=0)['eps0_Al2O3']
 
 
 def logit(p):
@@ -75,7 +78,7 @@ def sigmoid(z): return 1 / (1 + np.exp(-z))
 
 
 def load():
-    return pd.read_csv('tlc.csv')
+    return pd.read_csv(TLC_CSV)
 
 
 def cv(df, lam):
@@ -95,13 +98,11 @@ def cmd_eval(_):
     multi = df.groupby('Compound_ID').Rf.transform('size') > 1
     base = np.abs(df.Rf - df.Rf.mean()).mean()
     print(f'n={len(df)} 化合物={df.Compound_ID.nunique()} 複数測定の化合物の行={multi.sum()}  平均予測 MAE={base:.3f}')
-    best = None
     for lam in (0.03, 0.1, 0.3, 1, 3, 10, 100):
         pa, pb = cv(df, lam)
         ea, eb = np.abs(pa - df.Rf), np.abs(pb - df.Rf)
         print(f'lam={lam:6.2f}  (A)未知化合物 MAE={ea.mean():.3f} RMSE={np.sqrt((ea**2).mean()):.3f}   '
-              f'(B)既知化合物の別条件 MAE(全行)={eb.mean():.3f}  MAE(複数測定行のみ)={eb[multi].mean():.3f}')
-        if best is None or eb[multi].mean() < best[0]: best = (eb[multi].mean(), lam)
+              f'(B)既知化合物の別条件 MAE(全行)={eb.mean():.3f}  MAE(複数測定行のみ)={eb[multi].mean() if multi.any() else float("nan"):.3f}')
     print(f'-> 既知化合物向け lam={LAM_KNOWN}, 未知化合物向け lam={LAM_UNKNOWN} の 2 組を運用 (下記)')
     pred = np.zeros(len(df)); kind = []
     for i in range(len(df)):
@@ -109,8 +110,9 @@ def cmd_eval(_):
         mm = {'known': fit(df[tr], LAM_KNOWN), 'unknown': fit(df[tr], LAM_UNKNOWN)}
         pred[i] = sigmoid(predict_logit(mm, df.iloc[[i]]))[0]
     e = np.abs(pred - df.Rf.values)
+    mae = lambda mask: f'{e[mask].mean():.3f}' if mask.any() else '-'      # 該当行がないときは - (空の平均の警告を出さない)
     print(f'運用時の誤差 (1 行ずつ除いて予測): 全行 MAE={e.mean():.3f} RMSE={np.sqrt((e**2).mean()):.3f}   '
-          f'同じ化合物の他の測定がある行 MAE={e[multi.values].mean():.3f}   他の測定がない行 MAE={e[~multi.values].mean():.3f}   [平均予測 {base:.3f}]')
+          f'同じ化合物の他の測定がある行 MAE={mae(multi.values)}   他の測定がない行 MAE={mae(~multi.values)}   [平均予測 {base:.3f}]')
     print(f'  (注: 「他の測定がない行」は未知化合物の予測 = 溶媒だけの予測。ただし化合物単位ではなく行単位の除外なので (A) より少し楽観的)')
 
 
@@ -148,7 +150,11 @@ def rows(a, ratios):
 
 
 def load_model():
-    return json.load(open(MODEL))
+    if not os.path.exists(MODEL):
+        print(f'エラー: 学習済みモデルがありません。先に `python tlc_snyder.py fit` を実行してください'); raise SystemExit(1)
+    if os.path.exists(TLC_CSV) and os.path.getmtime(TLC_CSV) > os.path.getmtime(MODEL):
+        print('注意: tlc.csv がモデルより新しい -> `python tlc_snyder.py fit` で学習し直してください')
+    with open(MODEL) as f: return json.load(f)
 
 
 def parse_obs(text):
@@ -283,7 +289,7 @@ def cmd_suggest(a):
 
 
 def cmd_solvents(_=None):
-    ref = pd.read_csv('solvent_ref.csv', index_col=0).sort_values('eps0_Al2O3')
+    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_Al2O3')
     print('使える溶媒 (ε° が大きいほど強い溶媒。ε°=Snyder 溶離力 アルミナ基準, V=分子体積 cm3/mol):')
     for n, r in ref.iterrows():
         tag = ' [学習データあり]' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else ''
@@ -297,7 +303,7 @@ def interactive():
         print('モデルがないので学習します...'); cmd_fit(None)
     m = load_model()
     ids = sorted(m['known']['offset'])
-    ref = pd.read_csv('solvent_ref.csv', index_col=0).sort_values('eps0_Al2O3')
+    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_Al2O3')
     names = list(ref.index)
     sol = [f'{i}={n}' + ('*' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else '') for i, n in enumerate(names, 1)]
     last = None
@@ -335,7 +341,6 @@ def interactive():
 
 
 if __name__ == '__main__':
-    import sys
     if len(sys.argv) == 1:
         try:
             interactive()

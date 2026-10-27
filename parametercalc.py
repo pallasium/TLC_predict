@@ -10,7 +10,9 @@ def generate_molecular_features(input_file, output_file):
     for _, row in unique_compounds.iterrows():
         cpd_id = row['Compound_ID']
         mol = Chem.MolFromSmiles(row['SMILES'])
-        if mol is None: continue
+        if mol is None:
+            print(f'警告: {cpd_id} の SMILES を解釈できないのでスキップ: {row["SMILES"]!r}')
+            continue
             
         feat_dict = {
             'Compound_ID': cpd_id,
