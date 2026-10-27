@@ -50,16 +50,16 @@ TLC を流した結果があれば入力してください (...)
 | `hansen_model.py` | Hansen / Hildebrand を溶媒変数にした比較 |
 | `cv_baseline.py` | Leave-One-Compound-Out CV と RF / Ridge / PLS の比較 |
 | `parametercalc.py` | RDKit による分子特徴量の計算 |
-| `solvent_ref.csv` | 代表的な 6 溶媒の物性表 (Hexane, Toluene, CH2Cl2, CHCl3, AcOEt, MeOH) |
+| `solvent_ref.csv` | 溶媒の物性表 (17 溶媒: Hexane, Toluene, CH2Cl2, CHCl3, AcOEt, MeOH, Acetone, THF, MeCN, Et2O ほか) |
 
 `hansen_model.py` / `cv_baseline.py` は `solvent.csv` (溶媒ごとの Hansen パラメータ) も読む。自分で用意する。
 
 ## 溶媒物性について
-`solvent_ref.csv` には代表的な 6 溶媒だけを入れている。他の溶媒を使うときは、自分で文献から値を調べて 1 行ずつ追加する。
+`solvent_ref.csv` は、手元の溶媒物性表 (xlsx) から作った。他の溶媒を使うときは、表に載っている値を 1 行ずつ追加する。
 
-列: `Solvent,eps0_Al2O3,ETN,Hildebrand_dT,MolarVolume,dD_ref,dP_ref,dH_ref`
-- `eps0_Al2O3` (Snyder 溶離力) と `MolarVolume` (cm3/mol) は必須。他の列は `hansen_model.py` などの比較用。
-- 値の出典: Reichardt, *Solvents and Solvent Effects in Organic Chemistry* (ε°, ET^N)、*Polymer Handbook* Ch. 16 (Hildebrand, Hansen, 分子体積)。各文献の著作権は原著者・出版社に帰属する。
+列: `Solvent,eps0_SiO2,eps0_approx,TLC_strength,Hildebrand_dT,MolarVolume,dD_ref,dP_ref,dH_ref`
+- `eps0_SiO2` (Snyder 溶離力、シリカゲル基準。そのまま ε° として使う) と `MolarVolume` (cm3/mol) は必須。`eps0_approx=1` は元の表で概算値 (*) の溶媒。`TLC_strength` は表の別の溶媒強度の列 (現在は未使用)。他の列は `hansen_model.py` などの比較用。
+- 値の出典: 手元の溶媒物性表 (ε° = Snyder 溶出力、Hildebrand、Hansen、密度)。`MolarVolume` は表の密度と分子量 (表にないので別途与えた) から `分子量 / 密度` で計算した。DMF は表に ε° がないので入れていない。
 
 ## 注意
 - 学習データにない溶媒系への予測は外挿で、精度は未検証。

@@ -1,7 +1,7 @@
 """Snyder の溶離力 ε_mix を使った TLC Rf 予測モデル(線形・階層)。
 
  logit(Rf) = a + c·[強溶媒=MeOH] + b·ε_mix + u_化合物      (u は縮小(ridge)した化合物ごとのオフセット)
-  - ε_mix : Snyder-Soczewinski 混合則 (snyder_model.snyder_eps, α=0.57, シリカ=0.8×アルミナ)
+  - ε_mix : Snyder-Soczewinski 混合則 (snyder_model.snyder_eps, α=0.57, ε° は solvent_ref.csv のシリカ基準の値)
   - u_化合物: 学習データに測定値がある化合物だけ学習される。未知化合物は u=0 (= 溶媒だけで予測)
 
 分子特徴量(RDKit 記述子など)は LOCO-CV で改善しなかったため入れていない (README 参照)。
@@ -32,7 +32,7 @@ ALPHA = 0.57
 LAM_KNOWN, LAM_UNKNOWN = 0.1, 100.0
 ALCOHOLS = ('MeOH', 'EtOH', 'iPrOH', 'nPrOH')
 TRAINED_PAIRS = ({'Hexane', 'AcOEt'}, {'CHCl3', 'MeOH'})   # 学習データにある溶媒系
-EPS0 = pd.read_csv(REF_CSV, index_col=0)['eps0_Al2O3']
+EPS0 = pd.read_csv(REF_CSV, index_col=0)['eps0_SiO2']
 
 
 def logit(p):
@@ -290,11 +290,11 @@ def cmd_suggest(a):
 
 
 def cmd_solvents(_=None):
-    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_Al2O3')
-    print('使える溶媒 (ε° が大きいほど強い溶媒。ε°=Snyder 溶離力 アルミナ基準, V=分子体積 cm3/mol):')
+    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_SiO2')
+    print('使える溶媒 (ε° が大きいほど強い溶媒。ε°=Snyder 溶離力 シリカ基準, V=分子体積 cm3/mol):')
     for n, r in ref.iterrows():
         tag = ' [学習データあり]' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else ''
-        print(f'  {n:13s} ε°={r.eps0_Al2O3:.2f}  V={r.MolarVolume:6.1f}{tag}')
+        print(f'  {n:13s} ε°={r.eps0_SiO2:.2f}  V={r.MolarVolume:6.1f}{tag}')
     print('溶媒系の指定例: Hexane/AcOEt  Toluene/AcOEt  CH2Cl2/MeOH   (学習データのある系は Hexane/AcOEt と CHCl3/MeOH)')
 
 
@@ -302,7 +302,7 @@ def interactive():
     """引数なしで起動したときの対話モード (VS Code の実行ボタンなど)"""
     m = load_model()
     ids = sorted(m['known']['offset'])
-    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_Al2O3')
+    ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_SiO2')
     names = list(ref.index)
     sol = [f'{i}={n}' + ('*' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else '') for i, n in enumerate(names, 1)]
     last = None
