@@ -168,9 +168,20 @@ def parse_obs(text):
     return s1, s2, r, rf
 
 
-def ask_obs(max_n=2):
+def obs_text(t, solvent):
+    """数字だけの入力 '5 1 0.15' (比1 比2 Rf) / '0.6' (単一溶媒の Rf) を、予測する溶媒系での 'A/B 5:1=0.15' に直す。'=' を含む入力はそのまま"""
+    if '=' in t: return t
+    nums = t.split()
+    if '/' in solvent and len(nums) == 3: return f'{solvent} {nums[0]}:{nums[1]}={nums[2]}'
+    if '/' not in solvent and len(nums) == 1: return f'{solvent}={nums[0]}'
+    return t
+
+
+def ask_obs(solvent, max_n=2):
     """TLC を流した結果を対話で聞く (最大 max_n 枚)。入力が無い / Enter だけならスキップ"""
-    print('TLC を流した結果があれば入力してください (形式: 溶媒 比=Rf  例: Hexane/AcOEt 5:1=0.15 。Enter でスキップ)')
+    if '/' in solvent: fmt = f'数字だけで入力: 比1 比2 Rf (例 5 1 0.15 = {solvent} 5:1 で Rf 0.15)'
+    else: fmt = f'数字だけで入力: Rf (例 0.6 = {solvent} で Rf 0.6)'
+    print(f'TLC を流した結果があれば入力してください ({fmt}。別の溶媒系なら 溶媒 比=Rf。Enter でスキップ)')
     obs = []
     while len(obs) < max_n:
         try:
@@ -178,7 +189,7 @@ def ask_obs(max_n=2):
         except EOFError:
             break
         if not t: break
-        parse_obs(t); obs.append(t)      # 形式が不正ならここでエラー終了
+        t = obs_text(t, solvent); parse_obs(t); obs.append(t)      # 形式が不正ならここでエラー終了
     return obs
 
 
@@ -186,7 +197,7 @@ def calibrate(m, a):
     """実測 TLC (最大 2 枚) から化合物のオフセット u を推定して、その化合物用のモデルを返す。
     固定項 (切片, 系, ε_mix) は学習済みのものを使い、u = Σ残差 / (n + λ) (ridge, λ=LAM_KNOWN)。"""
     if a.id in m['known']['offset']: return m      # 学習データにある化合物は聞かない
-    obs = ask_obs()
+    obs = ask_obs(a.solvent)
     if not obs: return m
     a.calibrated = True
     cid = a.id or '__new__'
@@ -287,19 +298,27 @@ def interactive():
     m = load_model()
     ids = sorted(m['known']['offset'])
     ref = pd.read_csv('solvent_ref.csv', index_col=0).sort_values('eps0_Al2O3')
-    sol = [n + ('*' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else '') for n in ref.index]
+    names = list(ref.index)
+    sol = [f'{i}={n}' + ('*' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else '') for i, n in enumerate(names, 1)]
+    last = None
     print('Enter だけで終了。')
     while True:
-        print('\n登録済みの化合物ID: ' + '  '.join(ids))
-        cid = input('化合物ID (未知の化合物は SMILES を入力): ').strip()
+        print('\n登録済みの化合物:  ' + '  '.join(f'{i}={n}' for i, n in enumerate(ids, 1)))
+        cid = input('化合物 (番号。未知の化合物は SMILES を入力): ').strip()
         if not cid: return
+        if cid.isdigit() and 1 <= int(cid) <= len(ids): cid = ids[int(cid) - 1]
         smi = None
         if cid not in ids:
             smi, cid = cid, None
             print(f'  登録済みIDにないので SMILES として扱います: {smi}')
-        print('指定できる溶媒 (弱→強, *=学習データあり): ' + '  '.join(sol))
-        print('  混合は A/B (例 Hexane/AcOEt, CHCl3/MeOH, Toluene/AcOEt)、単一溶媒は名前だけ (例 Acetone)')
-        solv = input('溶媒 (A/B または A): ').strip()
+        print('溶媒 (弱→強, *=学習データあり): ' + '  '.join(sol))
+        print('  番号で入力: 混合は「弱い方 強い方」の 2 つ (例 1 5 = ' + f'{names[0]}/{names[min(4, len(names) - 1)]}' + ')、単一溶媒は 1 つ。名前でも可 (A/B)')
+        solv = input('溶媒' + (f' [Enter={last}]' if last else '') + ': ').strip() or (last or '')
+        if not solv: print('  溶媒が未入力です'); continue
+        toks = solv.replace('/', ' ').split()
+        if toks and all(t.isdigit() and 1 <= int(t) <= len(names) for t in toks) and len(toks) <= 2:
+            solv = '/'.join(names[int(t) - 1] for t in toks)
+        last = solv
         mode = input('1=目標Rfから溶媒比を探す  2=溶媒比からRfを予測 [1]: ').strip() or '1'
         ns = argparse.Namespace(id=cid, smiles=smi, solvent=solv)
         try:
