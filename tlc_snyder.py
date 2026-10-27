@@ -290,14 +290,18 @@ def interactive():
     sol = [n + ('*' if n in ('Hexane', 'AcOEt', 'CHCl3', 'MeOH') else '') for n in ref.index]
     print('Enter だけで終了。')
     while True:
-        print('\n登録済みの化合物ID: ' + '  '.join(ids) + '  | 未知の化合物は new')
-        cid = input('化合物ID (未知の化合物は new): ').strip()
+        print('\n登録済みの化合物ID: ' + '  '.join(ids))
+        cid = input('化合物ID (未知の化合物は SMILES を入力): ').strip()
         if not cid: return
+        smi = None
+        if cid not in ids:
+            smi, cid = cid, None
+            print(f'  登録済みIDにないので SMILES として扱います: {smi}')
         print('指定できる溶媒 (弱→強, *=学習データあり): ' + '  '.join(sol))
         print('  混合は A/B (例 Hexane/AcOEt, CHCl3/MeOH, Toluene/AcOEt)、単一溶媒は名前だけ (例 Acetone)')
         solv = input('溶媒 (A/B または A): ').strip()
         mode = input('1=目標Rfから溶媒比を探す  2=溶媒比からRfを予測 [1]: ').strip() or '1'
-        ns = argparse.Namespace(id=None if cid == 'new' else cid, smiles=None, solvent=solv)
+        ns = argparse.Namespace(id=cid, smiles=smi, solvent=solv)
         try:
             if mode == '2':
                 if '/' in solv: ns.ratio = input('比 (例 3:1, 溶媒の書いた順): ').strip()
