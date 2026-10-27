@@ -150,10 +150,11 @@ def rows(a, ratios):
 
 
 def load_model():
+    """モデルがない / tlc.csv の方が新しいときは、その場で学習し直す (tlc.csv を変えたら自動で反映される)"""
     if not os.path.exists(MODEL):
-        print(f'エラー: 学習済みモデルがありません。先に `python tlc_snyder.py fit` を実行してください'); raise SystemExit(1)
-    if os.path.exists(TLC_CSV) and os.path.getmtime(TLC_CSV) > os.path.getmtime(MODEL):
-        print('注意: tlc.csv がモデルより新しい -> `python tlc_snyder.py fit` で学習し直してください')
+        print('モデルがないので学習します...'); cmd_fit(None)
+    elif os.path.getmtime(TLC_CSV) > os.path.getmtime(MODEL):
+        print('tlc.csv が更新されているので学習し直します...'); cmd_fit(None)
     with open(MODEL) as f: return json.load(f)
 
 
@@ -299,8 +300,6 @@ def cmd_solvents(_=None):
 
 def interactive():
     """引数なしで起動したときの対話モード (VS Code の実行ボタンなど)"""
-    if not os.path.exists(MODEL):
-        print('モデルがないので学習します...'); cmd_fit(None)
     m = load_model()
     ids = sorted(m['known']['offset'])
     ref = pd.read_csv(REF_CSV, index_col=0).sort_values('eps0_Al2O3')
