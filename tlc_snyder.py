@@ -199,7 +199,29 @@ def calibrate(m, a):
     return {'known': {**k, 'offset': {**k['offset'], cid: u}}, 'unknown': m['unknown']}
 
 
+def ask_smiles(a):
+    """未知の化合物は SMILES を必須にする (--smiles か対話入力)。RDKit があれば構文も検証する"""
+    smi = (a.smiles or '').strip()
+    if not smi:
+        try: smi = input('未知の化合物です。SMILES を入力してください: ').strip()
+        except EOFError: smi = ''
+    if not smi or any(ch.isspace() for ch in smi):
+        print('エラー: 未知の化合物には SMILES が必要です (--smiles "..." または対話入力。空白は含められません)'); raise SystemExit(1)
+    try:
+        from rdkit import Chem
+        if Chem.MolFromSmiles(smi) is None:
+            print(f'エラー: SMILES を解釈できません: {smi!r}'); raise SystemExit(1)
+    except ImportError:
+        pass
+    a.smiles = smi
+
+
+def name(a):
+    return a.id or (f'新規 {a.smiles}' if getattr(a, 'smiles', None) else '新規')
+
+
 def note(a, m):
+    if a.id not in m['known']['offset']: ask_smiles(a)
     if a.id and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
         print(f'注意: {a.id} は学習データにない -> 溶媒のみの予測 (化合物差は反映されません)')
     elif not a.id:
@@ -218,7 +240,7 @@ def cmd_rf(a):
     s1, s2 = split_solvent(a.solvent)
     r1, r2 = (1.0, 1.0) if s1 == s2 else parse_ratio(a.ratio)     # 単一溶媒は比が不要
     p = sigmoid(predict_logit(m, rows(a, [(r1, r2)])))[0]
-    print(f'{a.id or "新規"}  {a.solvent}{"" if s1 == s2 else " " + a.ratio}  -> 予測 Rf = {p:.2f}')
+    print(f'{name(a)}  {a.solvent}{"" if s1 == s2 else " " + a.ratio}  -> 予測 Rf = {p:.2f}')
 
 
 def cmd_suggest(a):
@@ -226,7 +248,7 @@ def cmd_suggest(a):
     s1, s2 = split_solvent(a.solvent)
     if s1 == s2:
         p = sigmoid(predict_logit(m, rows(a, [(1.0, 1.0)])))[0]
-        print(f'{a.id or "新規"}  {s1} (単一溶媒) -> 予測 Rf = {p:.2f}   (単一溶媒は比を変えられないので、目標 Rf からの探索はできません。'
+        print(f'{name(a)}  {s1} (単一溶媒) -> 予測 Rf = {p:.2f}   (単一溶媒は比を変えられないので、目標 Rf からの探索はできません。'
               f'混合溶媒 A/B で指定してください)')
         return
     strong1 = EPS0[s1] >= EPS0[s2]           # ε° が大きい方が強溶媒
@@ -237,7 +259,7 @@ def cmd_suggest(a):
     i = int(np.argmin(np.abs(p - a.target)))
     f = fs[i]
     r1, r2 = (f, 1 - f) if strong1 else (1 - f, f)
-    print(f'{a.id or "新規"}  {a.solvent}  目標 Rf={a.target}  -> 強溶媒 {strong} の体積分率 {f:.2f} '
+    print(f'{name(a)}  {a.solvent}  目標 Rf={a.target}  -> 強溶媒 {strong} の体積分率 {f:.2f} '
           f'(= {s1}:{s2} = {r1:.2f}:{r2:.2f} ≒ {max(r1, r2) / min(r1, r2):.1f}:1) で予測 Rf={p[i]:.2f}')
     if abs(p[i] - a.target) > 0.05:
         print(f'  ※ この溶媒系では目標 Rf に届きません (強溶媒 1%〜99% の予測 Rf は {p.min():.2f}〜{p.max():.2f})。'
