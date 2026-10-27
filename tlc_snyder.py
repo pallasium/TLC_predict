@@ -12,6 +12,8 @@
   python tlc_snyder.py rf      --id <ID> --solvent Hexane/AcOEt --ratio 3:1
   python tlc_snyder.py suggest --id <ID> --solvent Hexane/AcOEt --target 0.3
   python tlc_snyder.py suggest --smiles "N[C@@H](C)C(=O)OC" --solvent CHCl3/MeOH --target 0.3   # 未知化合物
+  python tlc_snyder.py suggest --smiles "..." --solvent Hexane/AcOEt --target 0.3 --obs "Hexane/AcOEt 5:1=0.45"   # TLC 1〜2 枚の実測で補正
+  (--obs は "溶媒 比=Rf" を最大 2 回まで指定。化合物ごとのオフセット u を実測から推定して予測に反映する)
   (--solvent は 溶媒A/溶媒B。強弱は ε° で自動判定。使える溶媒は solvent_ref.csv。学習データにない溶媒系は外挿で未検証)
 """
 import argparse, json, os, re, sys
@@ -149,11 +151,53 @@ def load_model():
     return json.load(open(MODEL))
 
 
+def parse_obs(text):
+    """'Hexane/AcOEt 3:1=0.35' (単一溶媒は 'Acetone=0.6') -> (溶媒, 比, Rf)"""
+    try:
+        left, rf = text.rsplit('=', 1); rf = float(rf)
+        if not 0 < rf < 1: raise ValueError
+        parts = left.split(None, 1)
+        solv = parts[0]
+        s1, s2 = split_solvent(solv)
+        r = (1.0, 1.0) if s1 == s2 else parse_ratio(parts[1])
+    except (ValueError, IndexError):
+        print(f'エラー: --obs は "Hexane/AcOEt 3:1=0.35" の形式 (Rf は 0〜1) で指定してください (入力: {text!r})'); raise SystemExit(1)
+    bad = [x for x in (s1, s2) if x not in EPS0.index]
+    if bad:
+        print(f'エラー: solvent_ref.csv にない溶媒 {bad}'); raise SystemExit(1)
+    return s1, s2, r, rf
+
+
+def calibrate(m, a):
+    """実測 TLC (最大 2 枚) から化合物のオフセット u を推定して、その化合物用のモデルを返す。
+    固定項 (切片, 系, ε_mix) は学習済みのものを使い、u = Σ残差 / (n + λ) (ridge, λ=LAM_KNOWN)。"""
+    obs = getattr(a, 'obs', None)
+    if not obs: return m
+    if len(obs) > 2:
+        print(f'エラー: --obs は最大 2 枚までです (指定: {len(obs)} 枚)'); raise SystemExit(1)
+    cid = a.id or '__new__'
+    df = pd.DataFrame([{'Compound_ID': cid, 'Solvent_1': s1, 'Solvent_2': s2, 'Ratio_1': r[0], 'Ratio_2': r[1], 'Rf': rf}
+                       for s1, s2, r, rf in map(parse_obs, obs)])
+    k = m['known']
+    resid = logit(df.Rf.values) - predict_logit({**k, 'offset': {}}, df)
+    u = resid.sum() / (len(df) + LAM_KNOWN)
+    print(f'実測 {len(df)} 枚で補正: 化合物オフセット u = {u:+.2f} (logit 単位。正なら溶媒だけの予測より Rf が大きい化合物)')
+    return {'known': {**k, 'offset': {**k['offset'], cid: u}}, 'unknown': m['unknown']}
+
+
 def note(a, m):
+    if getattr(a, 'obs', None): return print_solvent_note(a)
+    print_compound_note(a, m); print_solvent_note(a)
+
+
+def print_compound_note(a, m):
     if a.id and a.id not in m['known']['offset']:
         print(f'注意: {a.id} は学習データにない -> 溶媒のみの予測 (化合物差は反映されません)')
     elif not a.id:
-        print('注意: 未知化合物 -> 溶媒のみの予測 (化合物差は反映されません。実測 1 点で補正すると精度が上がる)')
+        print('注意: 未知化合物 -> 溶媒のみの予測 (化合物差は反映されません。TLC を 1〜2 枚流して --obs で渡すと補正できる)')
+
+
+def print_solvent_note(a):
     s1, s2 = split_solvent(a.solvent)
     bad = [s for s in (s1, s2) if s not in EPS0.index]
     if bad:
@@ -164,7 +208,7 @@ def note(a, m):
 
 
 def cmd_rf(a):
-    m = load_model(); note(a, m)
+    m = load_model(); note(a, m); m = calibrate(m, a)
     s1, s2 = split_solvent(a.solvent)
     r1, r2 = (1.0, 1.0) if s1 == s2 else parse_ratio(a.ratio)     # 単一溶媒は比が不要
     p = sigmoid(predict_logit(m, rows(a, [(r1, r2)])))[0]
@@ -172,7 +216,7 @@ def cmd_rf(a):
 
 
 def cmd_suggest(a):
-    m = load_model(); note(a, m)
+    m = load_model(); note(a, m); m = calibrate(m, a)
     s1, s2 = split_solvent(a.solvent)
     if s1 == s2:
         p = sigmoid(predict_logit(m, rows(a, [(1.0, 1.0)])))[0]
@@ -250,6 +294,7 @@ if __name__ == '__main__':
     sp.add_parser('fit').set_defaults(f=cmd_fit)
     for n, f in (('rf', cmd_rf), ('suggest', cmd_suggest)):
         p = sp.add_parser(n); p.add_argument('--id'); p.add_argument('--smiles'); p.add_argument('--solvent', required=True)
+        p.add_argument('--obs', action='append', metavar='"溶媒 比=Rf"', help='実測 TLC (最大 2 枚、複数回指定)。例: "Hexane/AcOEt 3:1=0.35"')
         if n == 'rf': p.add_argument('--ratio', required=True)
         else: p.add_argument('--target', type=float, default=0.3)
         p.set_defaults(f=f)

@@ -25,6 +25,14 @@ python tlc_snyder.py suggest --id Anisole --solvent Hexane/AcOEt --target 0.3
 ```
 `--solvent` は 弱溶媒/強溶媒 の形で指定する (強弱は ε° で自動判定)。
 
+### TLC を 1〜2 枚流して補正する (`--obs`)
+実際に TLC を 1〜2 枚流した結果を `--obs "溶媒 比=Rf"` で渡すと、その化合物のオフセット u を実測から推定し、Snyder の溶媒パラメータ (ε_mix) による予測に反映する。`rf` / `suggest` の両方で使える。
+```
+python tlc_snyder.py suggest --smiles "COc1ccccc1" --solvent Hexane/AcOEt --target 0.3 \
+    --obs "Hexane/AcOEt 5:1=0.15" --obs "Hexane/AcOEt 2:1=0.4"
+```
+`--obs` は最大 2 回まで。別の溶媒系で流した結果でも使える (u は溶媒に依らない化合物ごとの補正として扱う)。
+
 ## ファイル
 | ファイル | 内容 |
 |---|---|
