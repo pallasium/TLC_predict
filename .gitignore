@@ -5,3 +5,7 @@ molecular_features.csv
 tlc_snyder_model.json
 __pycache__/
 *.pyc
+# 公開データ (TLCexp) ・自分のデータ・学習済みモデルは含めない
+user_data/
+data/
+models/

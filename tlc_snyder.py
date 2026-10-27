@@ -12,6 +12,8 @@
   python tlc_snyder.py rf      --id <ID> --solvent Hexane/AcOEt --ratio 3:1
   python tlc_snyder.py suggest --id <ID> --solvent Hexane/AcOEt --target 0.3
   python tlc_snyder.py suggest --smiles "N[C@@H](C)C(=O)OC" --solvent CHCl3/MeOH --target 0.3   # 未知化合物
+  python import_tlcexp.py rf_dataset_0203_total.csv ; python tlc_snyder.py pretrain   # 公開データ (TLCexp) で構造モデルを事前学習 (初回だけ)
+  (事前学習したモデルがあると、未知化合物は SMILES から構造で予測する。なければ溶媒のみの予測)
   (未知化合物の rf / suggest では、TLC を 1〜2 枚流した結果 "溶媒 比=Rf" を対話で聞く。Enter でスキップ。
    化合物ごとのオフセット u を実測から推定して予測に反映する)
   (--solvent は 溶媒A/溶媒B。強弱は ε° で自動判定。使える溶媒は solvent_ref.csv。学習データにない溶媒系は外挿で未検証)
@@ -200,11 +202,41 @@ def ask_obs(solvent, max_n=2):
     return obs
 
 
+def struct_gbm(a, m):
+    """未知の化合物で、事前学習した構造モデル (TLCexp) があれば返す。なければ None (溶媒のみの予測)"""
+    if a.id in m['known']['offset']: return None
+    try:
+        import rdkit, structure_model
+    except ImportError:
+        return None
+    return structure_model.load_pretrained(required=False)
+
+
+def predict_p(a, m, df):
+    """df (Solvent_1/2, Ratio_1/2, Compound_ID) の予測 Rf。未知の化合物で構造モデルがあるときは、構造から予測して実測で補正する"""
+    g = getattr(a, 'gbm', None)
+    if g is None: return sigmoid(predict_logit(m, df))
+    import structure_model
+    z, _ = structure_model.base_z(g, df.assign(SMILES=a.smiles))
+    return sigmoid(z + getattr(a, 'u_struct', 0.0))
+
+
 def calibrate(m, a):
     """実測 TLC (最大 2 枚) から化合物のオフセット u を推定して、その化合物用のモデルを返す。
     固定項 (切片, 系, ε_mix) は学習済みのものを使い、u = Σ残差 / (n + λ) (ridge, λ=LAM_KNOWN)。"""
     if a.id in m['known']['offset']: return m      # 学習データにある化合物は聞かない
     obs = ask_obs(a.solvent)
+    g = struct_gbm(a, m)
+    if g is not None:            # 構造モデル: 事前学習モデルの予測からのずれを u として推定 (ridge)
+        import structure_model
+        a.gbm = g
+        if obs:
+            od = pd.DataFrame([{'SMILES': a.smiles, 'Solvent_1': s1, 'Solvent_2': s2, 'Ratio_1': r[0], 'Ratio_2': r[1], 'Rf': rf}
+                               for s1, s2, r, rf in map(parse_obs, obs)])
+            z, _ = structure_model.base_z(g, od)
+            a.u_struct = float((logit(od.Rf.values) - z).sum() / (len(od) + LAM_KNOWN)); a.calibrated = True
+            print(f'実測 {len(od)} 枚で補正: 化合物オフセット u = {a.u_struct:+.2f} (構造モデルの予測からのずれ)')
+        return m
     if not obs: return m
     a.calibrated = True
     cid = a.id or '__new__'
@@ -240,10 +272,12 @@ def name(a):
 
 def note(a, m):
     if a.id not in m['known']['offset']: ask_smiles(a)
-    if a.id and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
+    if struct_gbm(a, m) is not None:
+        print('構造から予測します (TLCexp で事前学習したモデル)。TLC を 1〜2 枚流した結果を入力すると、その化合物に合わせて補正できる')
+    elif a.id and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
         print(f'注意: {a.id} は学習データにない -> 溶媒のみの予測 (化合物差は反映されません)')
     elif not a.id:
-        print('注意: 未知化合物 -> 溶媒のみの予測 (化合物差は反映されません。TLC を 1〜2 枚流した結果を入力すると補正できる)')
+        print('注意: 未知化合物 -> 溶媒のみの予測 (構造モデルは `pretrain` で作れる。 (化合物差は反映されません。TLC を 1〜2 枚流した結果を入力すると補正できる)')
     s1, s2 = split_solvent(a.solvent)
     bad = [s for s in (s1, s2) if s not in EPS0.index]
     if bad:
@@ -257,7 +291,7 @@ def cmd_rf(a):
     m = load_model(); note(a, m); m = calibrate(m, a)
     s1, s2 = split_solvent(a.solvent)
     r1, r2 = (1.0, 1.0) if s1 == s2 else parse_ratio(a.ratio)     # 単一溶媒は比が不要
-    p = sigmoid(predict_logit(m, rows(a, [(r1, r2)])))[0]
+    p = predict_p(a, m, rows(a, [(r1, r2)]))[0]
     print(f'{name(a)}  {a.solvent}{"" if s1 == s2 else " " + a.ratio}  -> 予測 Rf = {p:.2f}')
 
 
@@ -265,7 +299,7 @@ def cmd_suggest(a):
     m = load_model(); note(a, m); m = calibrate(m, a)
     s1, s2 = split_solvent(a.solvent)
     if s1 == s2:
-        p = sigmoid(predict_logit(m, rows(a, [(1.0, 1.0)])))[0]
+        p = predict_p(a, m, rows(a, [(1.0, 1.0)]))[0]
         print(f'{name(a)}  {s1} (単一溶媒) -> 予測 Rf = {p:.2f}   (単一溶媒は比を変えられないので、目標 Rf からの探索はできません。'
               f'混合溶媒 A/B で指定してください)')
         return
@@ -273,7 +307,7 @@ def cmd_suggest(a):
     strong = s1 if strong1 else s2
     fs = np.arange(1, 100) / 100.0          # 強溶媒の体積分率
     df = rows(a, [(f, 1 - f) if strong1 else (1 - f, f) for f in fs])
-    p = sigmoid(predict_logit(m, df))
+    p = predict_p(a, m, df)
     i = int(np.argmin(np.abs(p - a.target)))
     f = fs[i]
     r1, r2 = (f, 1 - f) if strong1 else (1 - f, f)
@@ -282,11 +316,17 @@ def cmd_suggest(a):
     if abs(p[i] - a.target) > 0.05:
         print(f'  ※ この溶媒系では目標 Rf に届きません (強溶媒 1%〜99% の予測 Rf は {p.min():.2f}〜{p.max():.2f})。'
               f'より強い溶媒を含む系に変えてください。')
-        if p.max() - p.min() < 0.1 and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
+        if p.max() - p.min() < 0.1 and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False) and getattr(a, 'gbm', None) is None:
             print('  ※ 予測 Rf が溶媒比でほとんど変わりません。未知化合物の溶媒のみの予測は CV でも平均予測以下の精度しかないため、'
                   'TLC を 1〜2 枚流した結果を入力して補正してください。')
     print('  参考: 強溶媒分率 -> 予測Rf: ' + ', '.join(f'{x:.2f}->{y:.2f}' for x, y in zip(fs[[4, 9, 19, 29, 49, 69]], p[[4, 9, 19, 29, 49, 69]])))
-    print('  (CV での誤差の目安: 未知化合物 MAE≈0.12, 既知化合物の別条件は `eval` 参照)')
+    if getattr(a, 'gbm', None) is not None: print('  (構造モデルの誤差の目安: 別の論文の化合物では MAE≈0.19 で、平均を答える予測 (0.17) と同程度。TLC の実測による補正が前提)')
+    else: print('  (CV での誤差の目安: 未知化合物 MAE≈0.12, 既知化合物の別条件は `eval` 参照)')
+
+
+def cmd_pretrain(a):
+    import structure_model
+    structure_model.pretrain(a.data or structure_model.PUB)
 
 
 def cmd_solvents(_=None):
@@ -350,6 +390,7 @@ if __name__ == '__main__':
     sp.add_parser('eval').set_defaults(f=cmd_eval)
     sp.add_parser('solvents').set_defaults(f=cmd_solvents)
     sp.add_parser('fit').set_defaults(f=cmd_fit)
+    p = sp.add_parser('pretrain'); p.add_argument('--data'); p.set_defaults(f=cmd_pretrain)
     for n, f in (('rf', cmd_rf), ('suggest', cmd_suggest)):
         p = sp.add_parser(n); p.add_argument('--id'); p.add_argument('--smiles'); p.add_argument('--solvent', required=True)
         if n == 'rf': p.add_argument('--ratio', required=True)
