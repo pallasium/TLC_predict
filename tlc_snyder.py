@@ -12,8 +12,8 @@
   python tlc_snyder.py rf      --id <ID> --solvent Hexane/AcOEt --ratio 3:1
   python tlc_snyder.py suggest --id <ID> --solvent Hexane/AcOEt --target 0.3
   python tlc_snyder.py suggest --smiles "N[C@@H](C)C(=O)OC" --solvent CHCl3/MeOH --target 0.3   # 未知化合物
-  python tlc_snyder.py suggest --smiles "..." --solvent Hexane/AcOEt --target 0.3 --obs "Hexane/AcOEt 5:1=0.45"   # TLC 1〜2 枚の実測で補正
-  (--obs は "溶媒 比=Rf" を最大 2 回まで指定。化合物ごとのオフセット u を実測から推定して予測に反映する)
+  (未知化合物の rf / suggest では、TLC を 1〜2 枚流した結果 "溶媒 比=Rf" を対話で聞く。Enter でスキップ。
+   化合物ごとのオフセット u を実測から推定して予測に反映する)
   (--solvent は 溶媒A/溶媒B。強弱は ε° で自動判定。使える溶媒は solvent_ref.csv。学習データにない溶媒系は外挿で未検証)
 """
 import argparse, json, os, re, sys
@@ -161,20 +161,34 @@ def parse_obs(text):
         s1, s2 = split_solvent(solv)
         r = (1.0, 1.0) if s1 == s2 else parse_ratio(parts[1])
     except (ValueError, IndexError):
-        print(f'エラー: --obs は "Hexane/AcOEt 3:1=0.35" の形式 (Rf は 0〜1) で指定してください (入力: {text!r})'); raise SystemExit(1)
+        print(f'エラー: 入力は "Hexane/AcOEt 3:1=0.35" の形式 (Rf は 0〜1) で指定してください (入力: {text!r})'); raise SystemExit(1)
     bad = [x for x in (s1, s2) if x not in EPS0.index]
     if bad:
         print(f'エラー: solvent_ref.csv にない溶媒 {bad}'); raise SystemExit(1)
     return s1, s2, r, rf
 
 
+def ask_obs(max_n=2):
+    """TLC を流した結果を対話で聞く (最大 max_n 枚)。入力が無い / Enter だけならスキップ"""
+    print('TLC を流した結果があれば入力してください (形式: 溶媒 比=Rf  例: Hexane/AcOEt 5:1=0.15 。Enter でスキップ)')
+    obs = []
+    while len(obs) < max_n:
+        try:
+            t = input(f'  {len(obs) + 1} 枚目: ').strip()
+        except EOFError:
+            break
+        if not t: break
+        parse_obs(t); obs.append(t)      # 形式が不正ならここでエラー終了
+    return obs
+
+
 def calibrate(m, a):
     """実測 TLC (最大 2 枚) から化合物のオフセット u を推定して、その化合物用のモデルを返す。
     固定項 (切片, 系, ε_mix) は学習済みのものを使い、u = Σ残差 / (n + λ) (ridge, λ=LAM_KNOWN)。"""
-    obs = getattr(a, 'obs', None)
+    if a.id in m['known']['offset']: return m      # 学習データにある化合物は聞かない
+    obs = ask_obs()
     if not obs: return m
-    if len(obs) > 2:
-        print(f'エラー: --obs は最大 2 枚までです (指定: {len(obs)} 枚)'); raise SystemExit(1)
+    a.calibrated = True
     cid = a.id or '__new__'
     df = pd.DataFrame([{'Compound_ID': cid, 'Solvent_1': s1, 'Solvent_2': s2, 'Ratio_1': r[0], 'Ratio_2': r[1], 'Rf': rf}
                        for s1, s2, r, rf in map(parse_obs, obs)])
@@ -186,18 +200,10 @@ def calibrate(m, a):
 
 
 def note(a, m):
-    if getattr(a, 'obs', None): return print_solvent_note(a)
-    print_compound_note(a, m); print_solvent_note(a)
-
-
-def print_compound_note(a, m):
-    if a.id and a.id not in m['known']['offset']:
+    if a.id and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
         print(f'注意: {a.id} は学習データにない -> 溶媒のみの予測 (化合物差は反映されません)')
     elif not a.id:
-        print('注意: 未知化合物 -> 溶媒のみの予測 (化合物差は反映されません。TLC を 1〜2 枚流して --obs で渡すと補正できる)')
-
-
-def print_solvent_note(a):
+        print('注意: 未知化合物 -> 溶媒のみの予測 (化合物差は反映されません。TLC を 1〜2 枚流した結果を入力すると補正できる)')
     s1, s2 = split_solvent(a.solvent)
     bad = [s for s in (s1, s2) if s not in EPS0.index]
     if bad:
@@ -236,9 +242,9 @@ def cmd_suggest(a):
     if abs(p[i] - a.target) > 0.05:
         print(f'  ※ この溶媒系では目標 Rf に届きません (強溶媒 1%〜99% の予測 Rf は {p.min():.2f}〜{p.max():.2f})。'
               f'より強い溶媒を含む系に変えてください。')
-        if p.max() - p.min() < 0.1 and not getattr(a, 'obs', None):
+        if p.max() - p.min() < 0.1 and a.id not in m['known']['offset'] and not getattr(a, 'calibrated', False):
             print('  ※ 予測 Rf が溶媒比でほとんど変わりません。未知化合物の溶媒のみの予測は CV でも平均予測以下の精度しかないため、'
-                  'TLC を 1〜2 枚流して --obs "溶媒 比=Rf" で補正してください。')
+                  'TLC を 1〜2 枚流した結果を入力して補正してください。')
     print('  参考: 強溶媒分率 -> 予測Rf: ' + ', '.join(f'{x:.2f}->{y:.2f}' for x, y in zip(fs[[4, 9, 19, 29, 49, 69]], p[[4, 9, 19, 29, 49, 69]])))
     print('  (CV での誤差の目安: 未知化合物 MAE≈0.12, 既知化合物の別条件は `eval` 参照)')
 
@@ -297,7 +303,6 @@ if __name__ == '__main__':
     sp.add_parser('fit').set_defaults(f=cmd_fit)
     for n, f in (('rf', cmd_rf), ('suggest', cmd_suggest)):
         p = sp.add_parser(n); p.add_argument('--id'); p.add_argument('--smiles'); p.add_argument('--solvent', required=True)
-        p.add_argument('--obs', action='append', metavar='"溶媒 比=Rf"', help='実測 TLC (最大 2 枚、複数回指定)。例: "Hexane/AcOEt 3:1=0.35"')
         if n == 'rf': p.add_argument('--ratio', required=True)
         else: p.add_argument('--target', type=float, default=0.3)
         p.set_defaults(f=f)
